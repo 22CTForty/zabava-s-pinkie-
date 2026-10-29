@@ -1,0 +1,176 @@
+
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zábava s Pinkie</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#fff8fc;color:#302439;font-family:Arial,sans-serif}
+header{background:linear-gradient(135deg,#ff72bd,#a77bff);padding:28px 18px;text-align:center;color:white}
+h1{margin:0;font-size:30px}
+header p{margin:8px 0 0}
+main{max-width:1000px;margin:auto;padding:20px}
+#status{text-align:center;padding:24px;color:#765b79}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:18px}
+.video{background:white;border-radius:16px;overflow:hidden;box-shadow:0 3px 14px #44204412}
+.video img{width:100%;display:block;aspect-ratio:16/9;object-fit:cover}
+.video h2{font-size:16px;line-height:1.4;margin:12px}
+.video button,#more{border:0;background:#a65bdf;color:white;border-radius:10px;padding:12px 16px;cursor:pointer;font-size:15px}
+.video button{margin:0 12px 14px}
+#more{display:block;margin:24px auto}
+#player{display:none;position:fixed;inset:0;background:#000e;z-index:5;align-items:center;justify-content:center;padding:14px}
+.playerbox{width:min(900px,100%);background:#fff;border-radius:14px;padding:10px}
+#frame{width:100%;aspect-ratio:16/9;border:0}
+#close{margin:4px 0 8px;border:0;padding:10px 14px;border-radius:8px}
+footer{text-align:center;padding:22px;color:#88768b;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>🌸 Zábava s Pinkie 🌸</h1>
+  <p>Všechna běžná videa na jednom místě</p>
+</header>
+<main>
+  <div id="status">Načítám videa…</div>
+  <div class="grid" id="videos"></div>
+  <button id="more" hidden>Načíst další videa</button>
+</main>
+<div id="player">
+  <div class="playerbox">
+    <button id="close">✕ Zavřít video</button>
+    <iframe id="frame" allow="autoplay; encrypted-media; picture-in-picture"
+      allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+  </div>
+</div>
+<footer>Videa jsou přehrávána prostřednictvím YouTube.</footer>
+
+<script>
+const API_KEY = "SEM_VLOZ_SVUJ_YOUTUBE_API_KLIC";
+const CHANNEL_HANDLE = "ZabavaSPinkie";
+const statusBox = document.getElementById("status");
+const grid = document.getElementById("videos");
+const moreButton = document.getElementById("more");
+let uploadsPlaylist = "";
+let nextPageToken = "";
+let loading = false;
+
+async function api(url) {
+  const response = await fetch(url);
+  const data = await response.json();
+  if (!response.ok || data.error) {
+    throw new Error(data.error?.message || "Nepodařilo se načíst videa.");
+  }
+  return data;
+}
+
+async function init() {
+  if (API_KEY.includes("SEM_VLOZ")) {
+    statusBox.textContent =
+      "Stránka je připravená. Ještě potřebuje YouTube API klíč.";
+    return;
+  }
+  try {
+    const channelData = await api(
+      "https://www.googleapis.com/youtube/v3/channels?part=contentDetails&forHandle=" +
+      encodeURIComponent(CHANNEL_HANDLE) + "&key=" + API_KEY
+    );
+    const channel = channelData.items?.[0];
+    if (!channel) throw new Error("Kanál se nepodařilo najít.");
+    uploadsPlaylist = channel.contentDetails.relatedPlaylists.uploads;
+    await loadVideos();
+  } catch (error) {
+    statusBox.textContent = "Chyba: " + error.message;
+  }
+}
+
+async function loadVideos() {
+  if (loading || !uploadsPlaylist) return;
+  loading = true;
+  moreButton.disabled = true;
+  statusBox.textContent = "Načítám videa…";
+  try {
+    const params = new URLSearchParams({
+      part: "snippet",
+      playlistId: uploadsPlaylist,
+      maxResults: "50",
+      key: API_KEY
+    });
+    if (nextPageToken) params.set("pageToken", nextPageToken);
+    const list = await api(
+      "https://www.googleapis.com/youtube/v3/playlistItems?" + params
+    );
+    nextPageToken = list.nextPageToken || "";
+
+    const ids = (list.items || [])
+      .map(item => item.snippet?.resourceId?.videoId)
+      .filter(Boolean);
+
+    if (ids.length) {
+      const details = await api(
+        "https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=" +
+        ids.join(",") + "&key=" + API_KEY
+      );
+      for (const video of details.items || []) {
+        const title = video.snippet.title || "";
+        const duration = parseDuration(video.contentDetails.duration);
+        const description = video.snippet.description || "";
+        // Orientační filtr Shorts; YouTube neposkytuje spolehlivý
+        // příznak, který by rozlišil každý Short od běžného videa.
+        const looksLikeShort =
+          duration <= 180 ||
+          /(^|\s)#shorts?\b/i.test(title + " " + description);
+        if (looksLikeShort) continue;
+        addVideo(video);
+      }
+    }
+    statusBox.textContent = grid.children.length
+      ? ""
+      : "Zatím se nenašla žádná běžná videa. Zkus načíst další.";
+    moreButton.hidden = !nextPageToken;
+  } catch (error) {
+    statusBox.textContent = "Nepodařilo se načíst videa: " + error.message;
+  } finally {
+    loading = false;
+    moreButton.disabled = false;
+  }
+}
+
+function parseDuration(iso) {
+  const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  return m ? (+m[1] || 0)*3600 + (+m[2] || 0)*60 + (+m[3] || 0) : 0;
+}
+
+function addVideo(video) {
+  const id = video.id;
+  const card = document.createElement("article");
+  card.className = "video";
+  const img = document.createElement("img");
+  img.src = video.snippet.thumbnails.medium?.url ||
+            video.snippet.thumbnails.default?.url;
+  img.alt = video.snippet.title;
+  img.loading = "lazy";
+  const title = document.createElement("h2");
+  title.textContent = video.snippet.title;
+  const button = document.createElement("button");
+  button.textContent = "▶ Přehrát video";
+  button.addEventListener("click", () => {
+    document.getElementById("frame").src =
+      "https://www.youtube-nocookie.com/embed/" + encodeURIComponent(id) +
+      "?autoplay=1&rel=0";
+    document.getElementById("player").style.display = "flex";
+  });
+  card.append(img, title, button);
+  grid.append(card);
+}
+
+document.getElementById("close").addEventListener("click", () => {
+  document.getElementById("frame").src = "";
+  document.getElementById("player").style.display = "none";
+});
+moreButton.addEventListener("click", loadVideos);
+init();
+</script>
+</body>
+</html>
